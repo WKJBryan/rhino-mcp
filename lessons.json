@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "updated": "2026-09-26",
+  "protocol": {
+    "transport": "stdio",
+    "note": "Local MCP via stdio is the recommended client-launched transport (MCP 2025-06-18). Streamable HTTP + optional Mcp-Session-Id is for remote/stateless HTTP. Rhino bridge remains stateful because the live document is state.",
+    "spec": "https://modelcontextprotocol.io/specification/2025-06-18/basic/transports"
+  },
+  "lessons": [
+    {
+      "id": "stale-capture",
+      "rule": "Never trust CaptureToBitmap/ViewCaptureToFile; use PrintWindow of Rhino HWND and Read the PNG.",
+      "added": "2026-09-26"
+    },
+    {
+      "id": "subd-mesh-freeze",
+      "rule": "SubD 'Creating meshes...' freezes viewport. Prefer Brep for massing. SubD CreateSubDBox sharpness>=3 for architecture.",
+      "added": "2026-09-26"
+    },
+    {
+      "id": "no-interactive-runscript",
+      "rule": "Never RunScript interactive commands (_Zoom,_Purge,_Shaded,export). They block the UI thread. Zoom via ActiveViewport API.",
+      "added": "2026-09-26"
+    },
+    {
+      "id": "small-steps",
+      "rule": "One exec per stage; monolithic scripts crash Rhino 9 WIP.",
+      "added": "2026-09-26"
+    },
+    {
+      "id": "object-count-lies",
+      "rule": "Trust enumerator + names + bboxes, not Objects.Count.",
+      "added": "2026-09-26"
+    },
+    {
+      "id": "visual-qa-required",
+      "rule": "Every stage: capture window, Read image, judge if it reads as architecture before continuing.",
+      "added": "2026-09-26"
+    }
+  ],
+  "gaps": [
+    "No one-shot window capture tool in MCP (added rhino_screenshot_window)",
+    "No health tool for stuck meshing / dead bridge (added rhino_health)",
+    "SubD vs Brep guidance not enforced by tools (rhino_add_box now Brep)",
+    "Streamable HTTP transport not exposed (stdio is correct for local MiMo; HTTP optional for multi-client)"
+  ]
+}

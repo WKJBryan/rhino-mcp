@@ -1,0 +1,14 @@
+start: direct_dispatch=False timer=True (rhino=8.35.26251.13001, py=2.7.12)
+start: Rhino MCP bridge (file-queue) polling C:\Users\bryan\AppData\Local\Temp\rhino-mcp-queue every 30ms  (python=2.7.12, rhino=8.35.26251.13001, timer=True)
+resp write failed for 1791202074526_1.req.json:
+Traceback (most recent call last):
+  File "C:\Users\bryan\XiaomiMiMoProjects\rhino-mcp\rhino\bridge.py", line 418, in _drain_queue
+    _atomic_write_json(resp_path, resp)
+  File "C:\Users\bryan\XiaomiMiMoProjects\rhino-mcp\rhino\bridge.py", line 370, in _atomic_write_json
+    os.replace(tmp, path)
+AttributeError: 'module' object has no attribute 'replace'
+
+start: Rhino MCP bridge (file-queue) polling C:\Users\bryan\AppData\Local\Temp\rhino-mcp-queue every 30ms  (python=2.7.12, rhino=8.35.26251.13001, timer=True)
+start: Rhino MCP bridge (file-queue) polling C:\Users\bryan\AppData\Local\Temp\rhino-mcp-queue every 8ms  (python=2.7.12, rhino=8.35.26251.13001, timer=True)
+start: Rhino MCP bridge (file-queue) polling C:\Users\bryan\AppData\Local\Temp\rhino-mcp-queue every 8ms  (python=2.7.12, rhino=8.35.26251.13001, timer=True)
+start: Rhino MCP bridge (file-queue) polling C:\Users\bryan\AppData\Local\Temp\rhino-mcp-queue every 8ms  (python=2.7.12, rhino=8.35.26251.13001, timer=True)
