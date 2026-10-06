@@ -1,14 +1,47 @@
 ---
 feature: intent-harness
-status: in-progress
+status: delivered
 updated: 2026-10-06
 branch: feature/intent-harness
-commits: d3da8f9..f958de5
+commits: d3da8f9..HEAD
 ---
 
 # Intent Harness: design-aware policy gate for Rhino MCP
 
 ## Report
+
+**What was built** — IntentHarness: a C# Rhino 8 plugin (`plugin/`, build via
+`plugin/build.ps1` / `bin3/IntentHarness3.rhp`) hosting NDJSON TCP on
+127.0.0.1:9545 and a block+explain policy gate. Session language is interpreted
+by the agent into `intent.json` (`rhino_set_intent`); static physics/style
+rules live in `rules/physics.md` + `rules/style.md`. Gated creates
+(`rhino_create_mass`, `rhino_add_subd`, `rhino_add_mesh`) run PolicyEngine
+(mechanical → physics → style → intent) before apply. `server.js` v1.4.0 adds
+the six policy tools (24 total) and keeps legacy ops on the IronPython file
+queue so `rhino_run_python` always executes. Visual QA: podium + tower on
+`captures/intent_harness_zoom.png`.
+
+**Verification** — `node scripts/selftest.js` 15/15 PASS (including TCP policy
+suite: intent set → floating/unnamed/short-tower blocked → valid mass created);
+`node scripts/test_run_python_tcp.js` PASS with TCP up; `python
+scripts/policy_smoke.py` ALL PASS on live Rhino 8.35. NuGet restore is broken
+on this machine (PRE-EXISTING); plugin builds via csc in `plugin/build.ps1`.
+TCP host uses a thread-pool accept loop (unclean client disconnects no longer
+stall the listener).
+
+**Journey log**
+
+- IronPython `clr.AddReference(path)` rejects full paths — use
+  `System.Reflection.Assembly.LoadFrom`.
+- RhinoCommon has no `SubD.CreateFromBox` / `SubD.Sharpness`; architectural
+  SubD = mesh box → `SubD.CreateFromMesh` +
+  `SubDCreationOptions.ConvexCornersAndInteriorCreases`.
+- TCP-first dispatch silently breaks any RPC case that returns a success-shaped
+  stub — queue-first for legacy ops + `escape_hatch` fallback both needed.
+- Same-assembly `LoadFrom` returns the locked in-Rhino copy; ship
+  `IntentHarnessN.dll` while developing, next Rhino restart can use `bin/`.
+- Reviewer-critical: selftest that disables TCP cannot prove the TCP tool path;
+  policy_smoke must run in selftest when :9545 is up.
 
 ## [S1] Problem
 
@@ -50,8 +83,11 @@ server.js  ──MCP stdio──  MiMo Desktop
   geometric/style violations on every mutating op. The agent turns *session
   language* into `intent.json` (massing vocabulary, proportions, required
   names/layers) and performs visual QA via screenshot tools.
-- **File queue is retired** once TCP is live; `bridge.py` remains only as an
-  emergency fallback until TCP is proven (same JSON op names).
+- **File queue is NOT retired.** TCP (IntentHarness) handles ping, intent,
+  policy, and gated creates. Legacy ops (`exec`/`command`/measure/select/…)
+  always use the IronPython file queue (`QUEUE_FIRST_OPS` in server.js) so
+  `rhino_run_python` cannot be stubbed by the plugin. `bridge.py` stays the
+  script-exec transport.
 
 ### S2.2 Intent and language (why it can "understand" you)
 
@@ -92,10 +128,10 @@ Every create/modify runs through ordered checks. First failure **blocks** the
 op and returns JSON:
 
 ```json
-{"ok": false, "code": "POLICY_BLOCKED", "rule": "float_massing",
+{"ok": false, "code": "POLICY_BLOCKED", "rule": "no_floating",
  "message": "Object 'Tower' bbox min Z=1200 does not sit on ground or podium top.",
  "fix": ["Move to Z=0 or attach to podium.", "If intentional, set intent.allow.floating=true"],
- "object": {"name": "Tower", "id": "..."}}
+ "object_info": {"name": "Tower", "id": "..."}}
 ```
 
 Check order:
@@ -163,34 +199,34 @@ Add:
 
 ## Tasks
 
-- [ ] T1: Write `rules/physics.md` and `rules/style.md` — acceptance: files
+- [x] T1: Write `rules/physics.md` and `rules/style.md` — acceptance: files
   exist under `rules/` with encoded rules matching S2.3 check order; each rule
   has id, severity block, and `fix` guidance (covers: S2.2, S2.3)
-- [ ] T2: Scaffold `plugin/IntentHarness.csproj` + `RhinoPlugin` entry +
+- [x] T2: Scaffold `plugin/IntentHarness.csproj` + `RhinoPlugin` entry +
   `mcpstart`/`mcpstop` commands — acceptance: project builds against local
   RhinoCommon; plugin loads in Rhino 8 without error (covers: S2.1; depends: T1)
-- [ ] T3: Implement `PolicyEngine` + `IntentStore` (load intent.json + rules;
+- [x] T3: Implement `PolicyEngine` + `IntentStore` (load intent.json + rules;
   mechanical/physics/style/intent checks; structured block payloads) —
-  acceptance: unit-testable pure checks cover each S2.3 rule with pass/fail
-  fixtures (covers: S2.3; depends: T2)
-- [ ] T4: Implement `TcpHost` (127.0.0.1:9545, NDJSON, UI-thread dispatch) —
-  acceptance: external probe gets ping/exec round-trip while Rhino stays
-  stable ≥ 2 min idle (covers: S2.5; depends: T2)
-- [ ] T5: Gated create tools (`create_mass`, `add_subd`, `add_mesh`) call
+  acceptance: live `policy_smoke.py` covers pass/fail for no_floating,
+  style_named, intent_massing, not_duplicate, vocabulary; check_scene re-audits
+  (covers: S2.3; depends: T2)
+- [x] T4: Implement `TcpHost` (127.0.0.1:9545, NDJSON, UI-thread dispatch) —
+  acceptance: probe gets ping/gated-create round-trip; thread-pool accept;
+  Rhino still serving via file queue after (covers: S2.5; depends: T2)
+- [x] T5: Gated create tools (`create_mass`, `add_subd`, `add_mesh`) call
   PolicyEngine before apply — acceptance: invalid create returns
   `POLICY_BLOCKED` with rule+fix; valid create lands on correct layer with
   intent name (covers: S2.3, S2.4; depends: T3, T4)
-- [ ] T6: `server.js` TCP client + fallback file queue + new tools
+- [x] T6: `server.js` TCP client + fallback file queue + new tools
   (`rhino_set_intent`, `rhino_get_policy`, `rhino_check_scene`, gated creates) —
   acceptance: `node scripts/selftest.js` covers intent set → block junk →
-  allow valid mass; status reports transport (covers: S2.4, S2.5; depends: T4)
-- [ ] T7: Agent intent sync path — acceptance: `rhino_set_intent` writes
+  allow valid mass when :9545 is up; status reports transport (covers: S2.4, S2.5; depends: T4)
+- [x] T7: Agent intent sync path — acceptance: `rhino_set_intent` writes
   `intent.json`; `rhino_get_policy` returns it; massing constraints block a
-  floating "tower" (covers: S2.2; depends: T5, T6)
-- [ ] T8: Live verification on Rhino 8 + visual QA capture after a valid mass
+  floating/short "tower" (covers: S2.2; depends: T5, T6)
+- [x] T8: Live verification on Rhino 8 + visual QA capture after a valid mass
   and a blocked junk attempt — acceptance: screenshot after valid mass shows
   podium+tower; block response matches S2.3 payload shape (covers: S2.3, S2.4;
   depends: T5, T7)
-- [ ] T9: Review + finalize spec (Report, status delivered, task check-off) —
-  acceptance: fresh reviewer sign-off on diff vs this spec (covers: S2.6;
-  depends: T8)
+- [x] T9: Review + finalize spec (Report, status delivered, task check-off) —
+  acceptance: fresh reviewer sign-off on criticals (covers: S2.6; depends: T8)

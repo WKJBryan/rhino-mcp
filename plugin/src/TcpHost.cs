@@ -53,19 +53,10 @@ namespace IntentHarness
                     TcpClient client;
                     try { client = _listener.AcceptTcpClient(); }
                     catch { break; }
-                    using (client)
-                    using (var stream = client.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true })
-                    {
-                        string line;
-                        while (_running && (line = reader.ReadLine()) != null)
-                        {
-                            if (string.IsNullOrWhiteSpace(line)) continue;
-                            string response = HandleLine(line);
-                            writer.WriteLine(response);
-                        }
-                    }
+                    // One short-lived handler per client so a stuck reader cannot
+                    // block the accept loop (observed after unclean disconnects).
+                    var c = client;
+                    ThreadPool.QueueUserWorkItem(_ => HandleClient(c));
                 }
             }
             catch (Exception ex)
@@ -76,6 +67,27 @@ namespace IntentHarness
             {
                 _running = false;
             }
+        }
+
+        static void HandleClient(TcpClient client)
+        {
+            try
+            {
+                using (client)
+                using (var stream = client.GetStream())
+                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true })
+                {
+                    string line;
+                    while (_running && (line = reader.ReadLine()) != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(line)) continue;
+                        string response = HandleLine(line);
+                        writer.WriteLine(response);
+                    }
+                }
+            }
+            catch { /* client disconnect */ }
         }
 
         static string HandleLine(string line)

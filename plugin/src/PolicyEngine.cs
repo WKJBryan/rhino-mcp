@@ -75,6 +75,33 @@ namespace IntentHarness
                     string.Format("Volume/area collapsed (vol={0}, area={1}).", vol, area),
                     new[] { "Thickness/height collapsed — increase size." }, objInfo);
 
+            // Mechanical: not_duplicate (bbox + type + name)
+            if (!string.IsNullOrEmpty(name) && doc != null)
+            {
+                foreach (var obj in doc.Objects)
+                {
+                    try
+                    {
+                        var oname = obj.Attributes != null ? obj.Attributes.Name : null;
+                        if (!string.Equals(oname, name, StringComparison.OrdinalIgnoreCase)) continue;
+                        var obb = obj.Geometry.GetBoundingBox(true);
+                        if (!obb.IsValid || !bb.IsValid) continue;
+                        bool sameBox =
+                            Math.Abs(obb.Min.X - bb.Min.X) < tol * 10 &&
+                            Math.Abs(obb.Min.Y - bb.Min.Y) < tol * 10 &&
+                            Math.Abs(obb.Min.Z - bb.Min.Z) < tol * 10 &&
+                            Math.Abs(obb.Max.X - bb.Max.X) < tol * 10 &&
+                            Math.Abs(obb.Max.Y - bb.Max.Y) < tol * 10 &&
+                            Math.Abs(obb.Max.Z - bb.Max.Z) < tol * 10;
+                        if (sameBox)
+                            return Block("not_duplicate",
+                                string.Format("Object '{0}' duplicates an existing bbox+name.", name),
+                                new[] { "Delete the old one or change name/position." }, objInfo);
+                    }
+                    catch { }
+                }
+            }
+
             // Physics: no floating (unless allowed)
             if (!intent.allow.floating)
             {
@@ -114,6 +141,38 @@ namespace IntentHarness
                     return Block("slab_planar",
                         "Slab-like object is not a thin horizontal plate.",
                         new[] { "Use a planar horizontal face." }, objInfo);
+            }
+
+            // Physics: stack_no_gap — if named as upper mass, gap to mass below must be small
+            if (!intent.allow.floating && !string.IsNullOrEmpty(name) && bb.IsValid && doc != null)
+            {
+                double minZ = bb.Min.Z;
+                if (Math.Abs(minZ) > Math.Max(tol * 10, 1.0))
+                {
+                    double lowerTop = double.MinValue;
+                    foreach (var obj in doc.Objects)
+                    {
+                        try
+                        {
+                            var obb = obj.Geometry.GetBoundingBox(true);
+                            if (!obb.IsValid) continue;
+                            if (obb.Max.Z <= minZ + tol && obb.Max.Z > lowerTop && OverlapXY(obb, bb))
+                                lowerTop = obb.Max.Z;
+                        }
+                        catch { }
+                    }
+                    if (lowerTop > -1e299)
+                    {
+                        double gap = minZ - lowerTop;
+                        double lowerH = Math.Max(tol, lowerTop); // conservative
+                        if (gap > Math.Max(tol * 20, 2.0))
+                        {
+                            return Block("stack_no_gap",
+                                string.Format("Vertical gap {0:0.##} between '{1}' and the mass below.", gap, name),
+                                new[] { "Close the gap or set intent.allow.floating=true." }, objInfo);
+                        }
+                    }
+                }
             }
 
             // Style: named
@@ -161,17 +220,23 @@ namespace IntentHarness
                         new[] { "Set intent.allow.mesh=true in intent." }, objInfo);
             }
 
+            // Style: required_layers is audited in SceneAudit (not create-time —
+            // EnsureLayer runs after this check and would race a hard block).
+
             // Intent: vocabulary + massing proportions
-            if (intent.vocabulary != null && intent.vocabulary.Count > 0 && !string.IsNullOrEmpty(name))
+            if (intent.vocabulary != null && intent.vocabulary.Count > 0 && !string.IsNullOrEmpty(name)
+                && kind == "mass")
             {
                 bool hit = intent.vocabulary.Any(v =>
                     !string.IsNullOrEmpty(v) &&
                     name.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0);
-                // vocabulary is soft guidance unless massing rule matches
-                if (!hit && intent.massing != null && intent.massing.Count > 0)
-                {
-                    // still allow non-massing helper objects
-                }
+                bool massingHit = intent.massing != null && intent.massing.Any(r =>
+                    r != null && !string.IsNullOrEmpty(r.name_contains) &&
+                    name.IndexOf(r.name_contains, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!hit && !massingHit)
+                    return Block("intent_vocabulary",
+                        string.Format("Name '{0}' does not use intent vocabulary [{1}].", name, string.Join(", ", intent.vocabulary)),
+                        new[] { "Rename using a vocabulary token (e.g. tower/podium/core)." }, objInfo);
             }
 
             if (intent.massing != null && !string.IsNullOrEmpty(name))

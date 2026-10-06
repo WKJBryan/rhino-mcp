@@ -215,6 +215,25 @@ async function main() {
   const up = await mcp.send("tools/call", { name: "rhino_status", arguments: {} });
   check("recovers after bridge restart", up.result && up.result.content[0].text.includes("pong"));
 
+  // Optional TCP policy suite — T6: intent set → block junk → allow valid mass.
+  const net = require("net");
+  const tcpUp = await new Promise((resolve) => {
+    const s = net.connect({ host: "127.0.0.1", port: parseInt(process.env.RHINO_MCP_TCP_PORT || "9545", 10) });
+    s.on("connect", () => { s.end(); resolve(true); });
+    s.on("error", () => resolve(false));
+    s.setTimeout(400, () => { s.destroy(); resolve(false); });
+  });
+  if (!tcpUp) {
+    console.log("SKIP  tcp policy suite (IntentHarness :9545 not running)");
+  } else {
+    const { spawnSync } = require("child_process");
+    const pyCmd = process.env.MIMO_PYTHON && process.env.MIMO_PYTHON.length ? process.env.MIMO_PYTHON : "python";
+    const py = spawnSync(pyCmd, [path.join(__dirname, "policy_smoke.py")], { encoding: "utf8", timeout: 90000 });
+    const out = (py.stdout || "") + (py.stderr || "");
+    const tail = out.split("\n").filter((l) => /PASS |FAIL |ALL PASS|FAILURE/.test(l)).slice(-10).join(" | ");
+    check("tcp policy suite (intent set → block junk → allow valid mass)", py.status === 0, tail.slice(0, 220));
+  }
+
   stopResponder();
   mcp.child.kill();
 

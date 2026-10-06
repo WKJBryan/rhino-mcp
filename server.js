@@ -139,16 +139,18 @@ function tcpRequest(op, payload, timeoutMs = REQUEST_TIMEOUT_MS) {
   const prio = isControl ? 0 : 5;
   const limit = timeoutMs || (isControl ? CONTROL_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
   const useTcp = process.env.RHINO_MCP_DISABLE_TCP !== "1";
+  // Ops the C# host does not implement (or only stubs) stay on the file queue.
+  const QUEUE_FIRST_OPS = new Set(["exec", "command", "document_info", "list_objects", "object_info", "measure", "select", "set_attrs"]);
   const run = async () => {
-    if (useTcp) {
+    if (useTcp && !QUEUE_FIRST_OPS.has(op)) {
       try {
         const out = await tcpHostRequest(op, payload, limit);
-        // Plugin doesn't implement every legacy op — fall through to the queue.
         const unknown =
           out &&
           (out.ok === false || out.result?.ok === false) &&
           /Unknown op/i.test(JSON.stringify(out));
-        if (unknown) return fileRequest(op, payload, limit, prio);
+        const stub = out && (out.escape_hatch === true || out.result?.escape_hatch === true);
+        if (unknown || stub) return fileRequest(op, payload, limit, prio);
         return out;
       } catch (e) {
         if (e && (e.code === "ECONNREFUSED" || e.code === "ECONNRESET")) {

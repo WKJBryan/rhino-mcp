@@ -2,8 +2,10 @@
 import json
 import socket
 import sys
+import time
 
 PORT = 9545
+RUN = str(int(time.time()))[-6:]
 
 
 def call(op, payload=None, timeout=15.0):
@@ -72,13 +74,13 @@ pol = unwrap(show("get_policy", call("get_policy")))
 check("get_policy has rules", "physics" in json.dumps(pol), "")
 
 pod = unwrap(show("create podium", call("create_mass", {
-    "name": "Podium_Main", "layer": "A-ARCH::A-FLOR-SLAB",
+    "name": "Podium_" + RUN, "layer": "A-ARCH::A-FLOR-SLAB",
     "x": 0, "y": 0, "z": 0, "dx": 20000, "dy": 15000, "dz": 8000
 })))
 check("podium created", bool(pod.get("id") or (pod.get("result") or {}).get("id") or pod.get("ok")), str(pod)[:120])
 
 float_tower = unwrap(show("floating tower (expect block)", call("create_mass", {
-    "name": "Tower_A", "layer": "A-ARCH::A-WALL-EXTR",
+    "name": "Tower_A_" + RUN, "layer": "A-ARCH::A-WALL-EXTR",
     "x": 1000, "y": 1000, "z": 50000, "dx": 4000, "dy": 4000, "dz": 40000
 })))
 text = json.dumps(float_tower)
@@ -91,20 +93,20 @@ utext = json.dumps(unnamed)
 check("unnamed blocked", "style_named" in utext or "POLICY_BLOCKED" in utext, utext[:150])
 
 short_tower = unwrap(show("short tower (expect block)", call("create_mass", {
-    "name": "Tower_Short", "layer": "A-ARCH::A-WALL-EXTR",
+    "name": "Tower_Short_" + RUN, "layer": "A-ARCH::A-WALL-EXTR",
     "x": 0, "y": 0, "z": 8000, "dx": 4000, "dy": 4000, "dz": 5000
 })))
 stext = json.dumps(short_tower)
 check("short tower blocked", "intent_massing" in stext or "min_height" in stext or "POLICY_BLOCKED" in stext, stext[:180])
 
 tower = unwrap(show("valid tower on podium", call("create_mass", {
-    "name": "Tower_Main", "layer": "A-ARCH::A-WALL-EXTR",
+    "name": "Tower_Main_" + RUN, "layer": "A-ARCH::A-WALL-EXTR",
     "x": 5000, "y": 5000, "z": 8000, "dx": 4000, "dy": 4000, "dz": 30000
 })))
 check("tower created", bool(tower.get("id") or (tower.get("result") or {}).get("id") or tower.get("ok")), str(tower)[:120])
 
 subd = unwrap(show("subd (expect block)", call("add_subd", {
-    "name": "Blob", "x": 0, "y": 0, "z": 0, "dx": 1000, "dy": 1000, "dz": 1000
+    "name": "Blob_" + RUN, "x": 0, "y": 0, "z": 0, "dx": 1000, "dy": 1000, "dz": 1000
 })))
 subdtext = json.dumps(subd)
 check("subd blocked", "style_subd" in subdtext or "allow.subd" in subdtext or "POLICY_BLOCKED" in subdtext, subdtext[:150])

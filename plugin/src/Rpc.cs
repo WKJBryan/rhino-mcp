@@ -59,8 +59,9 @@ namespace IntentHarness
                             return mesh is PolicyBlock pb3 ? (object)pb3 : Ok(reqId, mesh);
                         }
                     case "exec":
-                        // Escape hatch: still available; audit after the fact via check_scene.
-                        return Ok(reqId, new { note = "raw exec is not gated in-plugin; use gated creates for policy", escape_hatch = true });
+                        // Not implemented in C# — server.js must fall back to the
+                        // IronPython file-queue bridge for real script execution.
+                        return new { ok = false, escape_hatch = true, error = "exec not implemented in IntentHarness; use file-queue bridge" };
                     default:
                         return new { id = reqId, ok = false, error = "Unknown op: " + op };
                 }
@@ -211,22 +212,67 @@ namespace IntentHarness
             if (doc == null) return new { ok = false, error = "No document" };
             var issues = new List<object>();
             int unnamed = 0;
+            var intent = IntentStore.Current ?? new IntentDoc();
+
             foreach (var obj in doc.Objects)
             {
                 var name = obj.Attributes != null ? obj.Attributes.Name : null;
                 if (string.IsNullOrWhiteSpace(name)) unnamed++;
+                string layerPath = "Default";
+                try
+                {
+                    int li = obj.Attributes != null ? obj.Attributes.LayerIndex : 0;
+                    if (li >= 0 && li < doc.Layers.Count)
+                        layerPath = doc.Layers[li].FullPath ?? doc.Layers[li].Name;
+                }
+                catch { }
+
                 try
                 {
                     if (!obj.Geometry.IsValid)
                         issues.Add(new { rule = "valid_geometry", id = obj.Id.ToString(), message = "Invalid geometry" });
                 }
                 catch { }
+
+                // Re-run create-time policy against the live object (post-hoc audit).
+                try
+                {
+                    var check = PolicyEngine.CheckCreate(doc, obj.Geometry, name, layerPath, "mass");
+                    if (check is PolicyBlock blk && blk.rule != null && blk.rule != "style_count")
+                    {
+                        issues.Add(new
+                        {
+                            rule = blk.rule,
+                            id = obj.Id.ToString(),
+                            message = blk.message,
+                            fix = blk.fix
+                        });
+                    }
+                }
+                catch { }
             }
-            var intent = IntentStore.Current;
+
             if (unnamed > intent.limits.max_unnamed && !intent.allow.unnamed)
                 issues.Add(new { rule = "style_named", message = unnamed + " unnamed objects", fix = "Name objects or allow.unnamed=true" });
             if (doc.Objects.Count > intent.limits.max_objects)
                 issues.Add(new { rule = "style_count", message = "count=" + doc.Objects.Count + " > max_objects=" + intent.limits.max_objects });
+
+            if (intent.required_layers != null)
+            {
+                foreach (var req in intent.required_layers)
+                {
+                    if (string.IsNullOrEmpty(req)) continue;
+                    bool found = false;
+                    for (int i = 0; i < doc.Layers.Count; i++)
+                    {
+                        var L = doc.Layers[i];
+                        string full = L.FullPath ?? L.Name;
+                        if (full == req || L.Name == req || full.EndsWith(req)) { found = true; break; }
+                    }
+                    if (!found)
+                        issues.Add(new { rule = "style_layer", message = "missing required layer " + req, fix = "rhino_ensure_layer " + req });
+                }
+            }
 
             return new
             {
