@@ -78,6 +78,8 @@ function startMcp() {
     env: Object.assign({}, process.env, {
       RHINO_MCP_QUEUE: QUEUE,
       RHINO_MCP_TIMEOUT_MS: MCP_TIMEOUT,
+      // Force the file-queue path so the mock bridge is the transport under test.
+      RHINO_MCP_DISABLE_TCP: "1",
     }),
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -128,7 +130,7 @@ async function main() {
 
   const tools = await mcp.send("tools/list", {});
   const names = (tools.result.tools || []).map((t) => t.name);
-  check("tool count = 18", names.length === 18, String(names.length));
+  check("tool count = 24", names.length === 24, String(names.length));
   check(
     "dropped tools absent",
     !names.some((n) =>
@@ -156,6 +158,12 @@ async function main() {
       "rhino_measure",
       "rhino_select",
       "rhino_set_attrs",
+      "rhino_set_intent",
+      "rhino_get_policy",
+      "rhino_check_scene",
+      "rhino_create_mass",
+      "rhino_add_subd",
+      "rhino_add_mesh",
     ].every((n) => names.includes(n))
   );
 
@@ -206,6 +214,25 @@ async function main() {
   startResponder();
   const up = await mcp.send("tools/call", { name: "rhino_status", arguments: {} });
   check("recovers after bridge restart", up.result && up.result.content[0].text.includes("pong"));
+
+  // Optional TCP policy suite — T6: intent set → block junk → allow valid mass.
+  const net = require("net");
+  const tcpUp = await new Promise((resolve) => {
+    const s = net.connect({ host: "127.0.0.1", port: parseInt(process.env.RHINO_MCP_TCP_PORT || "9545", 10) });
+    s.on("connect", () => { s.end(); resolve(true); });
+    s.on("error", () => resolve(false));
+    s.setTimeout(400, () => { s.destroy(); resolve(false); });
+  });
+  if (!tcpUp) {
+    console.log("SKIP  tcp policy suite (IntentHarness :9545 not running)");
+  } else {
+    const { spawnSync } = require("child_process");
+    const pyCmd = process.env.MIMO_PYTHON && process.env.MIMO_PYTHON.length ? process.env.MIMO_PYTHON : "python";
+    const py = spawnSync(pyCmd, [path.join(__dirname, "policy_smoke.py")], { encoding: "utf8", timeout: 90000 });
+    const out = (py.stdout || "") + (py.stderr || "");
+    const tail = out.split("\n").filter((l) => /PASS |FAIL |ALL PASS|FAILURE/.test(l)).slice(-10).join(" | ");
+    check("tcp policy suite (intent set → block junk → allow valid mass)", py.status === 0, tail.slice(0, 220));
+  }
 
   stopResponder();
   mcp.child.kill();
