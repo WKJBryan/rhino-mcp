@@ -1,9 +1,9 @@
 ---
 feature: intent-harness
-status: designed
-updated: 2026-10-05
+status: in-progress
+updated: 2026-10-06
 branch: feature/intent-harness
-commits: # leave empty while in progress; fill at delivery
+commits: d3da8f9..f958de5
 ---
 
 # Intent Harness: design-aware policy gate for Rhino MCP
