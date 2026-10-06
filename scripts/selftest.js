@@ -78,6 +78,8 @@ function startMcp() {
     env: Object.assign({}, process.env, {
       RHINO_MCP_QUEUE: QUEUE,
       RHINO_MCP_TIMEOUT_MS: MCP_TIMEOUT,
+      // Force the file-queue path so the mock bridge is the transport under test.
+      RHINO_MCP_DISABLE_TCP: "1",
     }),
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -128,7 +130,7 @@ async function main() {
 
   const tools = await mcp.send("tools/list", {});
   const names = (tools.result.tools || []).map((t) => t.name);
-  check("tool count = 18", names.length === 18, String(names.length));
+  check("tool count = 24", names.length === 24, String(names.length));
   check(
     "dropped tools absent",
     !names.some((n) =>
@@ -156,6 +158,12 @@ async function main() {
       "rhino_measure",
       "rhino_select",
       "rhino_set_attrs",
+      "rhino_set_intent",
+      "rhino_get_policy",
+      "rhino_check_scene",
+      "rhino_create_mass",
+      "rhino_add_subd",
+      "rhino_add_mesh",
     ].every((n) => names.includes(n))
   );
 

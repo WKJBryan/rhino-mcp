@@ -27,6 +27,8 @@ const REQUEST_TIMEOUT_MS = parseInt(process.env.RHINO_MCP_TIMEOUT_MS || "70000",
 const CONTROL_TIMEOUT_MS = parseInt(process.env.RHINO_MCP_CONTROL_TIMEOUT_MS || "5000", 10);
 const RESP_POLL_MS = 2;
 const HEARTBEAT_FILE = path.join(RHINO_QUEUE, "heartbeat.json");
+const TCP_PORT = parseInt(process.env.RHINO_MCP_TCP_PORT || "9545", 10);
+const RHINO_MCP_HOME = process.env.RHINO_MCP_HOME || path.join(os.tmpdir(), "rhino-mcp");
 
 function send(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
@@ -132,17 +134,88 @@ async function fileRequest(op, payload, timeoutMs = REQUEST_TIMEOUT_MS, priority
 }
 
 function tcpRequest(op, payload, timeoutMs = REQUEST_TIMEOUT_MS) {
-  // Name kept for handler continuity; transport is the file queue now.
+  // Prefer the C# IntentHarness TCP host; fall back to the IronPython file queue.
   const isControl = CONTROL_OPS.has(op);
   const prio = isControl ? 0 : 5;
   const limit = timeoutMs || (isControl ? CONTROL_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
-  const run = () => fileRequest(op, payload, limit, prio);
-  if (isControl) {
-    // Control lane: do not queue behind a 3-minute geometry script.
-    return run();
-  }
+  const useTcp = process.env.RHINO_MCP_DISABLE_TCP !== "1";
+  const run = async () => {
+    if (useTcp) {
+      try {
+        const out = await tcpHostRequest(op, payload, limit);
+        // Plugin doesn't implement every legacy op — fall through to the queue.
+        const unknown =
+          out &&
+          (out.ok === false || out.result?.ok === false) &&
+          /Unknown op/i.test(JSON.stringify(out));
+        if (unknown) return fileRequest(op, payload, limit, prio);
+        return out;
+      } catch (e) {
+        if (e && (e.code === "ECONNREFUSED" || e.code === "ECONNRESET")) {
+          return fileRequest(op, payload, limit, prio);
+        }
+        if (e && e.code === "ETIMEDOUT" && op !== "ping") {
+          return fileRequest(op, payload, limit, prio);
+        }
+        throw e;
+      }
+    }
+    return fileRequest(op, payload, limit, prio);
+  };
+  if (isControl) return run();
   workChain = workChain.then(run, run);
   return workChain;
+}
+
+// ---------------------------------------------------------------------------
+// TCP host (IntentHarness.rhp) — NDJSON on 127.0.0.1:TCP_PORT
+// ---------------------------------------------------------------------------
+
+const net = require("net");
+let lastTransport = "file-queue";
+
+function tcpHostRequest(op, payload, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const id = String(nextSeq++);
+    const body = Object.assign({ id, op }, payload || {});
+    const sock = net.connect({ host: "127.0.0.1", port: TCP_PORT });
+    let buf = "";
+    const timer = setTimeout(() => {
+      sock.destroy();
+      const err = new Error(`TCP timeout after ${timeoutMs}ms (op=${op} port=${TCP_PORT})`);
+      err.code = "ETIMEDOUT";
+      reject(err);
+    }, timeoutMs);
+
+    sock.on("connect", () => {
+      sock.write(JSON.stringify(body) + "\n");
+    });
+    sock.setEncoding("utf8");
+    sock.on("data", (chunk) => {
+      buf += chunk;
+      const idx = buf.indexOf("\n");
+      if (idx < 0) return;
+      clearTimeout(timer);
+      const line = buf.slice(0, idx);
+      sock.end();
+      try {
+        const msg = JSON.parse(line);
+        lastTransport = "tcp";
+        if (msg.result !== undefined) resolve(msg.result);
+        else resolve(msg);
+      } catch (e) {
+        reject(e);
+      }
+    });
+    sock.on("error", (e) => {
+      clearTimeout(timer);
+      if (e.code === "ECONNREFUSED") lastTransport = "file-queue";
+      reject(e);
+    });
+    sock.on("close", () => {
+      clearTimeout(timer);
+    });
+  });
 }
 
 function statusFromHeartbeat() {
@@ -434,6 +507,107 @@ const TOOLS = [
         color: { type: "array", items: { type: "number" }, description: "[r,g,b] 0-255" },
         layer: { type: "string", description: "Layer name (created if missing)" },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "rhino_set_intent",
+    description:
+      "Write/merge intent.json from session language (vocabulary, massing rules, limits, allow.subd/mesh). Call after you understand the design brief — the policy gate uses it to block junk.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string" },
+        units: { type: "string", description: "default mm" },
+        vocabulary: { type: "array", items: { type: "string" }, description: "e.g. tower, podium, core, facade" },
+        required_layers: { type: "array", items: { type: "string" } },
+        massing: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name_contains: { type: "string" },
+              min_height_mm: { type: "number" },
+              max_height_mm: { type: "number" },
+              min_aspect_h_over_w: { type: "number" },
+              min_footprint_m2: { type: "number" },
+            },
+          },
+        },
+        limits: {
+          type: "object",
+          properties: {
+            max_objects: { type: "number" },
+            max_unnamed: { type: "number" },
+          },
+        },
+        allow: {
+          type: "object",
+          properties: {
+            subd: { type: "boolean" },
+            mesh: { type: "boolean" },
+            points: { type: "boolean" },
+            floating: { type: "boolean" },
+            unnamed: { type: "boolean" },
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "rhino_get_policy",
+    description: "Return active intent.json, rule ids, and recent policy blocks.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "rhino_check_scene",
+    description: "Audit the whole document for policy violations (unnamed, invalid, over-count, recent blocks).",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "rhino_create_mass",
+    description:
+      "Gated solid mass (Brep box) — policy-checked (physics/style/intent) before create. Prefer this over raw run_python for massing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Use intent vocabulary e.g. Tower_Podium" },
+        layer: { type: "string", description: "AIA layer path; default inferred from name" },
+        kind: { type: "string", description: "mass | wall | slab (default mass)" },
+        x: { type: "number" }, y: { type: "number" }, z: { type: "number" },
+        dx: { type: "number", description: "size X (mm)" },
+        dy: { type: "number" }, dz: { type: "number" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "rhino_add_subd",
+    description: "Gated SubD (requires intent.allow.subd). Convex corners + creases for architectural sharpness.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" }, layer: { type: "string" },
+        x: { type: "number" }, y: { type: "number" }, z: { type: "number" },
+        dx: { type: "number" }, dy: { type: "number" }, dz: { type: "number" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "rhino_add_mesh",
+    description: "Gated mesh box (requires intent.allow.mesh, default true).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" }, layer: { type: "string" },
+        x: { type: "number" }, y: { type: "number" }, z: { type: "number" },
+        dx: { type: "number" }, dy: { type: "number" }, dz: { type: "number" },
+      },
+      required: ["name"],
       additionalProperties: false,
     },
   },
@@ -875,6 +1049,33 @@ result = {
       );
       return r.ok ? okResult(r.result) : failResult(r.error, r);
     }
+    case "rhino_set_intent": {
+      const r = await tcpRequest("set_intent", { intent: a }, CONTROL_TIMEOUT_MS);
+      return r.ok ? okResult(r.result) : failResult(r.error, r);
+    }
+    case "rhino_get_policy": {
+      const r = await tcpRequest("get_policy", {}, CONTROL_TIMEOUT_MS);
+      return r.ok ? okResult(r.result) : failResult(r.error, r);
+    }
+    case "rhino_check_scene": {
+      const r = await tcpRequest("check_scene", {}, CONTROL_TIMEOUT_MS);
+      return r.ok ? okResult(r.result) : failResult(r.error, r);
+    }
+    case "rhino_create_mass": {
+      const r = await tcpRequest("create_mass", a, REQUEST_TIMEOUT_MS);
+      if (r && r.ok === false && r.rule) return failResult(r.message || r.rule, r);
+      return r && r.ok !== false ? okResult(r.result || r) : failResult(r && r.error, r);
+    }
+    case "rhino_add_subd": {
+      const r = await tcpRequest("add_subd", a, REQUEST_TIMEOUT_MS);
+      if (r && r.ok === false && r.rule) return failResult(r.message || r.rule, r);
+      return r && r.ok !== false ? okResult(r.result || r) : failResult(r && r.error, r);
+    }
+    case "rhino_add_mesh": {
+      const r = await tcpRequest("add_mesh", a, REQUEST_TIMEOUT_MS);
+      if (r && r.ok === false && r.rule) return failResult(r.message || r.rule, r);
+      return r && r.ok !== false ? okResult(r.result || r) : failResult(r && r.error, r);
+    }
     default:
       return failResult(`Unknown tool: ${name}`);
   }
@@ -891,7 +1092,7 @@ async function onMessage(msg) {
       sendResult(id, {
         protocolVersion: msg.params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "rhino-mcp", version: "1.3.0" },
+        serverInfo: { name: "rhino-mcp", version: "1.4.0" },
       });
       return;
     }
